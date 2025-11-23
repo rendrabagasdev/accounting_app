@@ -1,9 +1,4 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client"
   output   = "../lib/generated/prisma"
@@ -11,4 +6,582 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  // url kept in your environment
+}
+
+/////////////////////////////
+// ENUMS
+/////////////////////////////
+
+enum TransactionType {
+  INVOICE
+  EXPENSE
+  INCOME
+  TRANSFER
+}
+
+enum RoleType {
+  OWNER
+  ACCOUNTANT
+  STAFF
+  VIEWER
+}
+
+enum AccountType {
+  ASSETS
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+enum ReferenceType {
+  INVOICE
+  INCOME_TRANSACTION
+  EXPENSE_TRANSACTION
+  TRANSFER_TRANSACTION
+  BILL
+  NONE
+}
+
+enum RecurringInterval {
+  DAILY
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
+
+/////////////////////////////
+// CORE MODELS
+/////////////////////////////
+
+model Users {
+  id        Int      @id @default(autoincrement())
+  name      String?
+  email     String   @unique
+  password  String?
+  phone     String?
+  fcmToken  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relations
+  userCompanies    UserCompany[]
+  ownedCompanies   Companies[]        @relation("CompanyOwner")
+  invitations      Invitations[]      @relation("InvitesByUser")
+  boardsCreated    Boards[]           @relation("BoardsCreator")
+  auditLogs        AuditLogs[]        @relation("AuditUser")
+  boardPermissions BoardPermissions[]
+}
+
+model Companies {
+  id      Int     @id @default(autoincrement())
+  name    String
+  address String?
+  ownerId Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relations
+  owner             Users                  @relation("CompanyOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  userCompanies     UserCompany[]
+  accounts          Accounts[]
+  journalEntries    JournalEntries[]
+  journalLines      JournalLines[] // optional accessor
+  customers         Customers[]
+  vendors           Vendors[]
+  invoices          Invoices[]
+  invoiceItems      InvoiceItems[] // inverse via invoice relation
+  invoicePayments   InvoicePayments[]
+  incomeTxs         IncomeTransactions[]
+  expenseTxs        ExpenseTransactions[]
+  transferTxs       TransferTransactions[]
+  products          Products[]
+  bills             Bills[]
+  billItems         BillItems[]
+  billPayments      BillPayments[]
+  attachments       Attachments[]
+  auditLogs         AuditLogs[]            @relation("AuditCompany")
+  recurringInvoices RecurringInvoices[]
+  boards            Boards[]
+  invitations       Invitations[]          @relation("InvitesToCompany")
+}
+
+model UserCompany {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  companyId Int
+  role      RoleType
+  createdAt DateTime @default(now())
+
+  user    Users     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Companies @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([companyId])
+}
+
+/////////////////////////////
+// ACCOUNTS & JOURNAL
+/////////////////////////////
+
+model Accounts {
+  id        Int         @id @default(autoincrement())
+  companyId Int
+  name      String
+  code      String?
+  type      AccountType
+  isDefault Boolean     @default(false)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  company            Companies              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  journalLines       JournalLines[]
+  invoiceItems       InvoiceItems[]         @relation("IncomeAccountOnInvoiceItems")
+  invoicePayments    InvoicePayments[]      @relation("PaymentAccountOnInvoicePayments")
+  productIncome      Products[]             @relation("ProductIncomeAccount")
+  productExpense     Products[]             @relation("ProductExpenseAccount")
+  billItems          BillItems[]            @relation("ExpenseAccountOnBillItems")
+  billPayments       BillPayments[]         @relation("PaymentAccountOnBillPayments")
+  incomeAssetTxs     IncomeTransactions[]   @relation("IncomeAssetAccount")
+  incomeRevenueTxs   IncomeTransactions[]   @relation("IncomeRevenueAccount")
+  expenseAssetTxs    ExpenseTransactions[]  @relation("ExpenseAssetAccount")
+  expenseCategoryTxs ExpenseTransactions[]  @relation("ExpenseCategoryAccount")
+  transferFrom       TransferTransactions[] @relation("TransferFromAccount")
+  transferTo         TransferTransactions[] @relation("TransferToAccount")
+
+  @@index([companyId])
+  @@index([code])
+}
+
+model JournalEntries {
+  id              Int             @id @default(autoincrement())
+  companyId       Int
+  date            DateTime
+  description     String?
+  transactionType TransactionType
+  referenceType   ReferenceType   @default(NONE)
+  referenceId     Int?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  company      Companies      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  journalLines JournalLines[]
+
+  @@index([companyId])
+  @@index([date])
+}
+
+model JournalLines {
+  id             Int      @id @default(autoincrement())
+  journalEntryId Int
+  accountId      Int
+  debit          Decimal  @db.Decimal(20, 2)
+  credit         Decimal  @db.Decimal(20, 2)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  journalEntry JournalEntries @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  account      Accounts       @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  companies    Companies[]
+
+  @@index([journalEntryId])
+  @@index([accountId])
+}
+
+/////////////////////////////
+// CUSTOMERS & VENDORS
+/////////////////////////////
+
+model Customers {
+  id        Int      @id @default(autoincrement())
+  companyId Int
+  name      String
+  email     String?
+  phone     String?
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company            Companies            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invoices           Invoices[]
+  incomeTransactions IncomeTransactions[]
+  recurringInvoices  RecurringInvoices[]
+
+  @@index([companyId])
+}
+
+model Vendors {
+  id        Int      @id @default(autoincrement())
+  companyId Int
+  name      String
+  email     String?
+  phone     String?
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company             Companies             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  bills               Bills[]
+  expenseTransactions ExpenseTransactions[]
+
+  @@index([companyId])
+}
+
+/////////////////////////////
+// INVOICES & RELATED
+// status stored as String (flexible)
+/////////////////////////////
+
+model Invoices {
+  id            Int       @id @default(autoincrement())
+  companyId     Int
+  customerId    Int
+  invoiceNumber String?
+  date          DateTime
+  dueDate       DateTime?
+  status        String // draft, sent, partial, paid, overdue
+  subtotal      Decimal   @db.Decimal(20, 2)
+  total         Decimal   @db.Decimal(20, 2)
+  notes         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  company  Companies         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer Customers         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  items    InvoiceItems[]
+  payments InvoicePayments[]
+
+  @@index([companyId])
+  @@index([customerId])
+  @@index([invoiceNumber])
+}
+
+model InvoiceItems {
+  id              Int     @id @default(autoincrement())
+  invoiceId       Int
+  productId       Int? // optional link to product
+  description     String?
+  quantity        Decimal @db.Decimal(20, 4)
+  price           Decimal @db.Decimal(20, 2)
+  incomeAccountId Int
+
+  invoice       Invoices    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product       Products?   @relation(fields: [productId], references: [id], onDelete: SetNull)
+  incomeAccount Accounts    @relation("IncomeAccountOnInvoiceItems", fields: [incomeAccountId], references: [id], onDelete: Restrict)
+  companies     Companies[]
+
+  @@index([invoiceId])
+  @@index([productId])
+  @@index([incomeAccountId])
+}
+
+model InvoicePayments {
+  id        Int      @id @default(autoincrement())
+  invoiceId Int
+  accountId Int
+  amount    Decimal  @db.Decimal(20, 2)
+  date      DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  invoice   Invoices    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  account   Accounts    @relation("PaymentAccountOnInvoicePayments", fields: [accountId], references: [id], onDelete: Restrict)
+  companies Companies[]
+
+  @@index([invoiceId])
+  @@index([accountId])
+}
+
+/////////////////////////////
+// BASIC TRANSACTIONS
+/////////////////////////////
+
+model IncomeTransactions {
+  id              Int      @id @default(autoincrement())
+  companyId       Int
+  accountId       Int // asset account (cash/bank)
+  incomeAccountId Int // revenue account
+  customerId      Int?
+  amount          Decimal  @db.Decimal(20, 2)
+  date            DateTime
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  company        Companies  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  assetAccount   Accounts   @relation("IncomeAssetAccount", fields: [accountId], references: [id], onDelete: Restrict)
+  revenueAccount Accounts   @relation("IncomeRevenueAccount", fields: [incomeAccountId], references: [id], onDelete: Restrict)
+  customer       Customers? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([accountId])
+  @@index([incomeAccountId])
+}
+
+model ExpenseTransactions {
+  id               Int      @id @default(autoincrement())
+  companyId        Int
+  accountId        Int // asset account (cash/bank)
+  expenseAccountId Int // expense account
+  vendorId         Int?
+  amount           Decimal  @db.Decimal(20, 2)
+  date             DateTime
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  company         Companies @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  assetAccount    Accounts  @relation("ExpenseAssetAccount", fields: [accountId], references: [id], onDelete: Restrict)
+  categoryAccount Accounts  @relation("ExpenseCategoryAccount", fields: [expenseAccountId], references: [id], onDelete: Restrict)
+  vendor          Vendors?  @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([accountId])
+  @@index([expenseAccountId])
+}
+
+model TransferTransactions {
+  id            Int      @id @default(autoincrement())
+  companyId     Int
+  fromAccountId Int
+  toAccountId   Int
+  amount        Decimal  @db.Decimal(20, 2)
+  date          DateTime
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  company     Companies @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  fromAccount Accounts  @relation("TransferFromAccount", fields: [fromAccountId], references: [id], onDelete: Restrict)
+  toAccount   Accounts  @relation("TransferToAccount", fields: [toAccountId], references: [id], onDelete: Restrict)
+
+  @@index([companyId])
+  @@index([fromAccountId])
+  @@index([toAccountId])
+}
+
+/////////////////////////////
+// ADDITIONAL TABLES
+/////////////////////////////
+
+model Products {
+  id               Int      @id @default(autoincrement())
+  companyId        Int
+  name             String
+  description      String?
+  price            Decimal  @db.Decimal(20, 2)
+  incomeAccountId  Int?
+  expenseAccountId Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  company        Companies      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  incomeAccount  Accounts?      @relation("ProductIncomeAccount", fields: [incomeAccountId], references: [id], onDelete: SetNull)
+  expenseAccount Accounts?      @relation("ProductExpenseAccount", fields: [expenseAccountId], references: [id], onDelete: SetNull)
+  invoiceItems   InvoiceItems[]
+
+  @@index([companyId])
+}
+
+model RecurringInvoices {
+  id         Int               @id @default(autoincrement())
+  companyId  Int
+  customerId Int
+  interval   RecurringInterval
+  nextRun    DateTime
+  isActive   Boolean           @default(true)
+  notes      String?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  company  Companies @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer Customers @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@index([companyId])
+  @@index([customerId])
+}
+
+model Bills {
+  id         Int       @id @default(autoincrement())
+  companyId  Int
+  vendorId   Int
+  billNumber String?
+  date       DateTime
+  dueDate    DateTime?
+  total      Decimal   @db.Decimal(20, 2)
+  notes      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  company  Companies      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vendor   Vendors        @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  items    BillItems[]
+  payments BillPayments[]
+
+  @@index([companyId])
+  @@index([vendorId])
+}
+
+model BillItems {
+  id               Int      @id @default(autoincrement())
+  billId           Int
+  description      String?
+  quantity         Decimal  @db.Decimal(20, 4)
+  price            Decimal  @db.Decimal(20, 2)
+  expenseAccountId Int
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  bill           Bills       @relation(fields: [billId], references: [id], onDelete: Cascade)
+  expenseAccount Accounts    @relation("ExpenseAccountOnBillItems", fields: [expenseAccountId], references: [id], onDelete: Restrict)
+  companies      Companies[]
+
+  @@index([billId])
+  @@index([expenseAccountId])
+}
+
+model BillPayments {
+  id        Int      @id @default(autoincrement())
+  billId    Int
+  accountId Int
+  amount    Decimal  @db.Decimal(20, 2)
+  date      DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bill      Bills       @relation(fields: [billId], references: [id], onDelete: Cascade)
+  account   Accounts    @relation("PaymentAccountOnBillPayments", fields: [accountId], references: [id], onDelete: Restrict)
+  companies Companies[]
+
+  @@index([billId])
+  @@index([accountId])
+}
+
+model Attachments {
+  id          Int      @id @default(autoincrement())
+  companyId   Int
+  targetTable String // table name like 'Invoices','Bills','Expenses'
+  targetId    Int
+  fileUrl     String
+  fileName    String?
+  mimeType    String?
+  size        Int?
+  createdAt   DateTime @default(now())
+
+  company Companies @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([targetTable, targetId])
+}
+
+model AuditLogs {
+  id        Int      @id @default(autoincrement())
+  companyId Int
+  userId    Int?
+  action    String
+  tableName String
+  recordId  Int?
+  oldValue  Json?
+  newValue  Json?
+  createdAt DateTime @default(now())
+
+  company Companies @relation("AuditCompany", fields: [companyId], references: [id], onDelete: Cascade)
+  user    Users?    @relation("AuditUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([tableName])
+}
+
+model Invitations {
+  id        Int      @id @default(autoincrement())
+  email     String
+  companyId Int
+  role      RoleType
+  token     String   @unique
+  expiresAt DateTime
+  accepted  Boolean  @default(false)
+  invitedBy Int?
+  createdAt DateTime @default(now())
+
+  company Companies @relation("InvitesToCompany", fields: [companyId], references: [id], onDelete: Cascade)
+  inviter Users?    @relation("InvitesByUser", fields: [invitedBy], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([email])
+}
+
+/////////////////////////////
+// BOARDS / CANVAS (company-scoped)
+/////////////////////////////
+
+model Boards {
+  id        Int      @id @default(autoincrement())
+  companyId Int
+  name      String
+  createdBy Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company     Companies          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  creator     Users?             @relation("BoardsCreator", fields: [createdBy], references: [id])
+  nodes       BoardNodes[]
+  edges       BoardEdges[]
+  permissions BoardPermissions[]
+
+  @@index([companyId])
+}
+
+model BoardNodes {
+  id        Int      @id @default(autoincrement())
+  boardId   Int
+  type      String // "text", "sticky", "shape", "invoice", etc.
+  data      Json? // flexible data: title, amount, transactionId, etc.
+  x         Float
+  y         Float
+  width     Float?
+  height    Float?
+  rotation  Float?
+  color     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  board     Boards       @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  edgesFrom BoardEdges[] @relation("EdgeFrom")
+  edgesTo   BoardEdges[] @relation("EdgeTo")
+
+  @@index([boardId])
+}
+
+model BoardEdges {
+  id         Int      @id @default(autoincrement())
+  boardId    Int
+  fromNodeId Int
+  toNodeId   Int
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  board    Boards     @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  fromNode BoardNodes @relation("EdgeFrom", fields: [fromNodeId], references: [id], onDelete: Cascade)
+  toNode   BoardNodes @relation("EdgeTo", fields: [toNodeId], references: [id], onDelete: Cascade)
+
+  @@index([boardId])
+  @@index([fromNodeId])
+  @@index([toNodeId])
+}
+
+model BoardPermissions {
+  id        Int      @id @default(autoincrement())
+  boardId   Int
+  userId    Int
+  canView   Boolean  @default(true)
+  canEdit   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  board Boards @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user  Users  @relation(fields: [userId], references: [id])
+
+  @@index([boardId])
+  @@index([userId])
 }
